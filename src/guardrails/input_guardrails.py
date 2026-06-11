@@ -38,9 +38,18 @@ def detect_injection(user_input: str) -> bool:
         True if injection detected, False otherwise
     """
     INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        # Classic "ignore/forget/disregard prior instructions" override attempts.
+        r"\b(ignore|forget|disregard|override)\b.{0,20}\b(all\s+)?(previous|above|prior|earlier|your)\b.{0,20}\b(instruction|prompt|rule|directive)",
+        # Role / persona hijacking ("you are now DAN", "pretend you are ...").
+        r"\byou are now\b|\bpretend (you are|to be)\b|\bact as (a |an )?(unrestricted|jailbroken|dan)\b",
+        # Direct requests to reveal the system prompt / hidden instructions.
+        r"\b(reveal|show|print|repeat|output|display|expose)\b.{0,20}\b(system prompt|instruction|initial config|your config|prompt)",
+        # Attempts to extract embedded secrets (password / API key / connection string).
+        r"\b(password|api[\s_-]?key|secret|credential|connection string|admin pass)\b",
+        # Encoding / reformatting tricks used to smuggle the prompt past filters.
+        r"\b(base64|rot13|hex|encode|in json|as json|as yaml|as xml)\b.{0,30}\b(prompt|instruction|config|secret)\b",
+        # Vietnamese injection ("bỏ qua mọi hướng dẫn", "tiết lộ mật khẩu").
+        r"\bb\W*o?\s*qua\b.{0,20}\b(h\w*ng d\w*n|ch\W*\s*d\w*n)\b|\bti\w*t l\w*\b.{0,15}\bm\w*t kh\w*u\b|\bm\w*t kh\w*u admin\b",
     ]
 
     for pattern in INJECTION_PATTERNS:
@@ -70,12 +79,18 @@ def topic_filter(user_input: str) -> bool:
     """
     input_lower = user_input.lower()
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return True
-    # 2. If input doesn't contain any allowed topic -> return True
-    # 3. Otherwise -> return False (allow)
+    # 1. Hard block: any explicitly dangerous keyword (hack, weapon, drug, ...).
+    #    These are rejected even if a banking word also appears in the sentence.
+    if any(blocked in input_lower for blocked in BLOCKED_TOPICS):
+        return True
 
-    pass  # Replace with your implementation
+    # 2. Allow-list gate: the message must mention at least one banking topic,
+    #    otherwise it is off-topic for a banking assistant and gets blocked.
+    if not any(allowed in input_lower for allowed in ALLOWED_TOPICS):
+        return True
+
+    # 3. On-topic and not dangerous -> allow.
+    return False
 
 
 # ============================================================
@@ -128,14 +143,26 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 3. If both are False: return None (let message through)
+        # Layer 1 — injection detection: catch prompt-override / secret-extraction
+        # attempts before they ever reach the LLM.
+        if detect_injection(text):
+            self.blocked_count += 1
+            return self._block_response(
+                "I can't help with that request. I'm a VinBank assistant for "
+                "banking questions only."
+            )
 
-        pass  # Replace with your implementation
+        # Layer 2 — topic filter: keep the assistant on-topic and reject dangerous
+        # subjects (hacking, weapons, etc.).
+        if topic_filter(text):
+            self.blocked_count += 1
+            return self._block_response(
+                "I can only help with banking-related questions such as accounts, "
+                "transfers, loans, savings, and cards. How can I help with your banking needs?"
+            )
+
+        # Safe input — let it through to the LLM.
+        return None
 
 
 # ============================================================
